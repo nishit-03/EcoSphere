@@ -394,3 +394,371 @@ export async function fetchHeatmapData({ period = 'all' } = {}) {
         },
     };
 }
+
+// ─── Current User Profile (replaces CURRENT_USER mock) ───
+export async function fetchCurrentUserProfile() {
+    const userId = await getCurrentUserId();
+    if (!userId) return null;
+
+    const { data: user } = await supabase
+        .from('users')
+        .select('id, name, email, profile_image_url, community_id, trust_score, total_points, streak_count')
+        .eq('id', userId)
+        .single();
+
+    if (!user) return null;
+
+    // Aggregate today's CO2
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const { data: todayPosts } = await supabase
+        .from('posts')
+        .select('co2_saved')
+        .eq('user_id', userId)
+        .gte('created_at', todayStart.toISOString());
+
+    const todayCo2 = (todayPosts || []).reduce((s, p) => s + (p.co2_saved || 0), 0);
+
+    // Get community name
+    let communityName = 'EcoSphere';
+    if (user.community_id) {
+        const { data: comm } = await supabase
+            .from('communities')
+            .select('name')
+            .eq('id', user.community_id)
+            .single();
+        communityName = comm?.name || 'EcoSphere';
+    }
+
+    return {
+        id: user.id,
+        name: user.name || 'EcoUser',
+        email: user.email,
+        profileImage: user.profile_image_url,
+        communityId: user.community_id,
+        communityName,
+        trustScore: user.trust_score || 50,
+        totalPoints: user.total_points || 0,
+        streakCount: user.streak_count || 0,
+        streakGoal: 14,
+        todayCo2Saved: parseFloat(todayCo2.toFixed(1)),
+        lastActionDate: 'Today',
+        graceHours: 6,
+    };
+}
+
+// ─── Community: User's community ───
+export async function fetchUserCommunity() {
+    const userId = await getCurrentUserId();
+    if (!userId) return null;
+
+    const { data: user } = await supabase
+        .from('users')
+        .select('community_id')
+        .eq('id', userId)
+        .single();
+
+    if (!user?.community_id) {
+        // Try community_members table
+        const { data: membership } = await supabase
+            .from('community_members')
+            .select('community_id')
+            .eq('user_id', userId)
+            .limit(1)
+            .maybeSingle();
+        return membership?.community_id || null;
+    }
+    return user.community_id;
+}
+
+// ─── Community Details ───
+export async function fetchCommunityDetails(communityId) {
+    const { data, error } = await supabase
+        .from('communities')
+        .select('id, name, description, type, banner_image, member_count')
+        .eq('id', communityId)
+        .single();
+
+    if (error) throw error;
+
+    // Count members if member_count is 0
+    let memberCount = data.member_count || 0;
+    if (memberCount === 0) {
+        const { count } = await supabase
+            .from('community_members')
+            .select('id', { count: 'exact', head: true })
+            .eq('community_id', communityId);
+        memberCount = count || 0;
+    }
+
+    return {
+        id: data.id,
+        name: data.name,
+        description: data.description || '',
+        type: data.type,
+        bannerImage: data.banner_image,
+        memberCount,
+    };
+}
+
+// ─── Leaderboard ───
+export async function fetchLeaderboard(communityId) {
+    // Get members of this community
+    const { data: members } = await supabase
+        .from('community_members')
+        .select('user_id, users ( id, name, profile_image_url, total_points )')
+        .eq('community_id', communityId);
+
+    if (!members?.length) return [];
+
+    const userIds = members.map(m => m.user_id);
+
+    // Get total CO2 per user from posts
+    const { data: posts } = await supabase
+        .from('posts')
+        .select('user_id, co2_saved')
+        .in('user_id', userIds)
+        .eq('ai_verification_status', 'verified');
+
+    const co2Map = {};
+    (posts || []).forEach(p => {
+        co2Map[p.user_id] = (co2Map[p.user_id] || 0) + (p.co2_saved || 0);
+    });
+
+    const leaderboard = members.map(m => ({
+        userId: m.user_id,
+        name: m.users?.name || 'EcoUser',
+        avatar: m.users?.profile_image_url,
+        points: m.users?.total_points || 0,
+        totalCo2: parseFloat((co2Map[m.user_id] || 0).toFixed(1)),
+    }));
+
+    leaderboard.sort((a, b) => b.totalCo2 - a.totalCo2);
+    return leaderboard.slice(0, 10).map((u, i) => ({ ...u, rank: i + 1 }));
+}
+
+// ─── Community Tasks ───
+export async function fetchCommunityTasks(communityId) {
+    const userId = await getCurrentUserId();
+
+    const { data, error } = await supabase
+        .from('community_tasks')
+        .select('id, title, description, points, deadline, created_at')
+        .eq('community_id', communityId)
+        .order('deadline', { ascending: true });
+
+    if (error) throw error;
+
+    // Check which tasks current user has completed
+    let completedIds = new Set();
+    if (userId && data?.length) {
+        const taskIds = data.map(t => t.id);
+        const { data: completions } = await supabase
+            .from('community_task_completions')
+            .select('task_id')
+            .eq('user_id', userId)
+            .in('task_id', taskIds);
+        completedIds = new Set((completions || []).map(c => c.task_id));
+    }
+
+    return (data || []).map(t => ({
+        id: t.id,
+        title: t.title,
+        description: t.description,
+        points: t.points,
+        deadline: t.deadline,
+        isCompleted: completedIds.has(t.id),
+    }));
+}
+
+// ─── Complete Task ───
+export async function completeTask(taskId) {
+    const userId = await getCurrentUserId();
+    if (!userId) throw new Error('Not authenticated');
+
+    const { error } = await supabase
+        .from('community_task_completions')
+        .insert({ task_id: taskId, user_id: userId });
+
+    if (error) {
+        if (error.code === '23505') return { success: false, error: 'Already completed' };
+        throw error;
+    }
+    return { success: true };
+}
+
+// ─── Community Events ───
+export async function fetchCommunityEvents(communityId) {
+    const userId = await getCurrentUserId();
+
+    const { data, error } = await supabase
+        .from('community_events')
+        .select('id, title, description, location, event_date, created_at')
+        .eq('community_id', communityId)
+        .order('event_date', { ascending: true });
+
+    if (error) throw error;
+
+    // Check RSVPs
+    let rsvpIds = new Set();
+    if (userId && data?.length) {
+        const eventIds = data.map(e => e.id);
+        const { data: rsvps } = await supabase
+            .from('community_event_rsvps')
+            .select('event_id')
+            .eq('user_id', userId)
+            .in('event_id', eventIds);
+        rsvpIds = new Set((rsvps || []).map(r => r.event_id));
+    }
+
+    return (data || []).map(e => ({
+        id: e.id,
+        title: e.title,
+        description: e.description,
+        location: e.location,
+        eventDate: e.event_date,
+        isRsvpd: rsvpIds.has(e.id),
+    }));
+}
+
+// ─── RSVP Event ───
+export async function rsvpEvent(eventId) {
+    const userId = await getCurrentUserId();
+    if (!userId) throw new Error('Not authenticated');
+
+    // Check existing
+    const { data: existing } = await supabase
+        .from('community_event_rsvps')
+        .select('id')
+        .eq('event_id', eventId)
+        .eq('user_id', userId)
+        .maybeSingle();
+
+    if (existing) {
+        await supabase.from('community_event_rsvps').delete().eq('id', existing.id);
+        return { success: true, rsvpd: false };
+    } else {
+        await supabase.from('community_event_rsvps').insert({ event_id: eventId, user_id: userId });
+        return { success: true, rsvpd: true };
+    }
+}
+
+// ─── Community Messages ───
+export async function fetchCommunityMessages(communityId) {
+    const { data, error } = await supabase
+        .from('community_messages')
+        .select(`
+            id, content, created_at,
+            users!community_messages_user_id_fkey ( id, name, profile_image_url )
+        `)
+        .eq('community_id', communityId)
+        .order('created_at', { ascending: true })
+        .limit(50);
+
+    if (error) throw error;
+
+    return (data || []).map(m => ({
+        id: m.id,
+        userId: m.users?.id,
+        userName: m.users?.name || 'EcoUser',
+        userAvatar: m.users?.profile_image_url,
+        content: m.content,
+        createdAt: m.created_at,
+    }));
+}
+
+// ─── Send Community Message ───
+export async function sendCommunityMessage(communityId, content) {
+    const userId = await getCurrentUserId();
+    if (!userId) throw new Error('Not authenticated');
+
+    const { data, error } = await supabase
+        .from('community_messages')
+        .insert({ community_id: communityId, user_id: userId, content })
+        .select(`
+            id, content, created_at,
+            users!community_messages_user_id_fkey ( id, name, profile_image_url )
+        `)
+        .single();
+
+    if (error) throw error;
+
+    return {
+        id: data.id,
+        userId: data.users?.id,
+        userName: data.users?.name || 'You',
+        userAvatar: data.users?.profile_image_url,
+        content: data.content,
+        createdAt: data.created_at,
+    };
+}
+
+// ─── Subscribe to Community Chat (Realtime) ───
+export function subscribeToCommunityChat(communityId, onNewMessage) {
+    const channel = supabase
+        .channel(`community_chat_${communityId}`)
+        .on(
+            'postgres_changes',
+            {
+                event: 'INSERT',
+                schema: 'public',
+                table: 'community_messages',
+                filter: `community_id=eq.${communityId}`,
+            },
+            async (payload) => {
+                // Fetch user info for the new message
+                const msg = payload.new;
+                const { data: user } = await supabase
+                    .from('users')
+                    .select('id, name, profile_image_url')
+                    .eq('id', msg.user_id)
+                    .single();
+
+                onNewMessage({
+                    id: msg.id,
+                    userId: user?.id || msg.user_id,
+                    userName: user?.name || 'EcoUser',
+                    userAvatar: user?.profile_image_url,
+                    content: msg.content,
+                    createdAt: msg.created_at,
+                });
+            }
+        )
+        .subscribe();
+
+    // Return unsubscribe function
+    return () => {
+        supabase.removeChannel(channel);
+    };
+}
+
+// ─── Update Heatmap Grid after post creation ───
+export async function updateHeatmapGrid(routeData) {
+    if (!routeData?.coordinates?.length) return;
+
+    const points = routeData.coordinates.map(coord => ({
+        lat: parseFloat(coord.latitude.toFixed(3)),
+        lng: parseFloat(coord.longitude.toFixed(3)),
+        activity_type: 'mixed',
+        intensity_score: 1.0,
+    }));
+
+    // Upsert each grid cell
+    for (const pt of points) {
+        const { data: existing } = await supabase
+            .from('route_heatmap')
+            .select('id, intensity_score')
+            .eq('lat', pt.lat)
+            .eq('lng', pt.lng)
+            .maybeSingle();
+
+        if (existing) {
+            await supabase
+                .from('route_heatmap')
+                .update({ intensity_score: existing.intensity_score + 1, last_updated: new Date().toISOString() })
+                .eq('id', existing.id);
+        } else {
+            await supabase.from('route_heatmap').insert(pt);
+        }
+    }
+}

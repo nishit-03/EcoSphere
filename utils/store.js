@@ -1,7 +1,6 @@
 // ─── Global State Store (Zustand) ───
 import { create } from 'zustand';
 import * as api from './api';
-import { FEED_POSTS } from './mockData';
 import { impactAsync, notificationAsync } from './haptics';
 
 export const useStore = create((set, get) => ({

@@ -14,7 +14,7 @@ const BADGES = [
 
 export default function Profile() {
     const [profile, setProfile] = useState(null);
-    const [stats, setStats] = useState({ actions: 0, co2: 0, streak: 0, trustScore: 50 });
+    const [stats, setStats] = useState({ actions: 0, co2: 0, streak: 0, trustScore: 50, distance: 0, sessions: 0 });
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -32,14 +32,15 @@ export default function Profile() {
                 .eq('id', user.id)
                 .single();
 
-            // Count posts and total CO2
+            // Count posts and aggregate stats
             const { data: postStats } = await supabase
                 .from('posts')
-                .select('co2_saved')
+                .select('co2_saved, distance_km')
                 .eq('user_id', user.id)
                 .eq('ai_verification_status', 'verified');
 
             const totalCo2 = (postStats || []).reduce((s, p) => s + (p.co2_saved || 0), 0);
+            const totalDistance = (postStats || []).reduce((s, p) => s + (p.distance_km || 0), 0);
 
             setProfile(data || { name: user.email?.split('@')[0] || 'EcoUser', email: user.email });
             setStats({
@@ -47,6 +48,8 @@ export default function Profile() {
                 co2: totalCo2.toFixed(1),
                 streak: data?.streak_count || 0,
                 trustScore: data?.trust_score || 50,
+                distance: totalDistance.toFixed(1),
+                sessions: postStats?.length || 0,
             });
         } catch (e) {
             console.warn('Profile load error:', e.message);
@@ -71,6 +74,7 @@ export default function Profile() {
     const displayStats = [
         { label: 'Actions', value: String(stats.actions) },
         { label: 'CO₂ Saved', value: `${stats.co2}kg` },
+        { label: 'Distance', value: `${stats.distance}km` },
         { label: 'Day Streak', value: String(stats.streak), hasFlame: true },
     ];
 

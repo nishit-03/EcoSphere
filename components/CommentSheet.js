@@ -2,7 +2,7 @@ import { View, Text, Modal, TouchableOpacity, FlatList, TextInput, KeyboardAvoid
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { X, Send, Trash2, AlertTriangle, Heart } from 'lucide-react-native';
 import { Avatar } from './Avatar';
-import { CURRENT_USER } from '../utils/mockData';
+import { supabase } from '../utils/supabase';
 import { impactAsync } from '../utils/haptics';
 
 function timeAgo(dateStr) {
@@ -48,11 +48,11 @@ function CommentSkeleton() {
 }
 
 // ─── Comment Item with like animation ───
-function CommentItem({ comment, onDelete, isLast }) {
+function CommentItem({ comment, onDelete, isLast, currentUserId }) {
     const [liked, setLiked] = useState(false);
     const [likeCount, setLikeCount] = useState(comment.likes || 0);
     const heartScale = useRef(new Animated.Value(1)).current;
-    const isOwn = comment.userId === CURRENT_USER.id;
+    const isOwn = comment.userId === currentUserId;
 
     const handleLike = useCallback(() => {
         impactAsync();
@@ -108,9 +108,17 @@ function CommentItem({ comment, onDelete, isLast }) {
 export function CommentSheet({ visible, onClose, post, comments = [], loading, sending, error, onSend, onDelete }) {
     const [text, setText] = useState('');
     const [inputFocused, setInputFocused] = useState(false);
+    const [currentUserId, setCurrentUserId] = useState(null);
     const inputRef = useRef(null);
     const listRef = useRef(null);
     const bgOpacity = useRef(new Animated.Value(0)).current;
+
+    // Get current user ID from Supabase
+    useEffect(() => {
+        supabase.auth.getUser().then(({ data: { user } }) => {
+            setCurrentUserId(user?.id || null);
+        });
+    }, []);
 
     // Background fade in
     useEffect(() => {
@@ -203,6 +211,7 @@ export function CommentSheet({ visible, onClose, post, comments = [], loading, s
                                 comment={item}
                                 onDelete={(cid) => onDelete(post.id, cid)}
                                 isLast={index === comments.length - 1}
+                                currentUserId={currentUserId}
                             />
                         )}
                         style={{ maxHeight: 340 }}
@@ -223,7 +232,7 @@ export function CommentSheet({ visible, onClose, post, comments = [], loading, s
 
                 {/* Input bar with glow effect */}
                 <View className="flex-row items-end gap-2 px-4 py-3 border-t border-slate-800 bg-slate-900">
-                    <Avatar size="xs" fallback={CURRENT_USER.name[0]} />
+                    <Avatar size="xs" fallback="Me" />
                     <View className={`flex-1 rounded-2xl border ${inputFocused ? 'border-teal-500/50 shadow-lg shadow-teal-500/10' : 'border-slate-700/50'}`}
                         style={inputFocused ? { shadowColor: '#2dd4bf', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.15, shadowRadius: 8 } : {}}>
                         <TextInput

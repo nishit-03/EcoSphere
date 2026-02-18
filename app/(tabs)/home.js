@@ -16,8 +16,7 @@ import { StreakSheet } from '../../components/StreakSheet';
 import { SkeletonFeed } from '../../components/SkeletonPost';
 import { LeafRefreshIndicator } from '../../components/LeafRefresh';
 import { useStore } from '../../utils/store';
-import { generateShareMessage } from '../../utils/api';
-import { CURRENT_USER } from '../../utils/mockData';
+import { generateShareMessage, fetchCurrentUserProfile, fetchUserCommunity } from '../../utils/api';
 import { impactAsync } from '../../utils/haptics';
 
 // ─── Streak Ring (Duolingo-inspired) ───
@@ -44,24 +43,27 @@ function StreakRing({ current, goal, size = 48 }) {
 }
 
 // ─── Feed Header ───
-function FeedHeader({ unreadCount, onNotifPress, onStreakPress, onAvatarPress, streakData }) {
+function FeedHeader({ unreadCount, onNotifPress, onStreakPress, onAvatarPress, streakData, currentUser }) {
     const hour = new Date().getHours();
     const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
-    const streak = streakData || CURRENT_USER;
+    const streak = streakData || currentUser || {};
+    const userName = currentUser?.name || 'EcoUser';
+    const todayCo2 = currentUser?.todayCo2Saved || 0;
+    const trustScore = currentUser?.trustScore || 50;
 
     return (
         <View className="px-5 pt-3 pb-4">
             <View className="flex-row items-center justify-between mb-5">
                 <TouchableOpacity className="flex-row items-center gap-3" onPress={onAvatarPress} activeOpacity={0.7}>
-                    <Avatar size="sm" fallback={CURRENT_USER.name[0]} className="border-2 border-teal-500" />
+                    <Avatar size="sm" fallback={(userName)[0]} className="border-2 border-teal-500" />
                     <View>
                         <Text className="text-slate-400 text-xs font-medium">{greeting} 👋</Text>
-                        <Text className="text-white font-bold text-lg leading-tight">{CURRENT_USER.name}</Text>
+                        <Text className="text-white font-bold text-lg leading-tight">{userName}</Text>
                     </View>
                 </TouchableOpacity>
                 <View className="flex-row items-center gap-4">
                     <TouchableOpacity onPress={onStreakPress} activeOpacity={0.7}>
-                        <StreakRing current={streak.current || streak.streakCount} goal={streak.goal || streak.streakGoal} />
+                        <StreakRing current={streak.current || streak.streakCount || 0} goal={streak.goal || streak.streakGoal || 7} />
                     </TouchableOpacity>
                     <TouchableOpacity className="relative" onPress={onNotifPress}>
                         <Bell size={22} color="#94a3b8" />
@@ -81,12 +83,12 @@ function FeedHeader({ unreadCount, onNotifPress, onStreakPress, onAvatarPress, s
                     </View>
                     <View>
                         <Text className="text-slate-400 text-xs font-medium">Today's Impact</Text>
-                        <Text className="text-white font-black text-xl">{CURRENT_USER.todayCo2Saved}kg<Text className="text-sm font-medium text-teal-400"> CO₂</Text></Text>
+                        <Text className="text-white font-black text-xl">{todayCo2}kg<Text className="text-sm font-medium text-teal-400"> CO₂</Text></Text>
                     </View>
                 </View>
                 <View className="items-end">
                     <Text className="text-slate-500 text-[10px] font-medium uppercase tracking-wider">Trust</Text>
-                    <Text className="text-teal-400 font-black text-lg">{CURRENT_USER.trustScore}</Text>
+                    <Text className="text-teal-400 font-black text-lg">{trustScore}</Text>
                 </View>
             </View>
         </View>
@@ -161,7 +163,7 @@ const PostCard = memo(function PostCard({ post, onLike, onComment, onShare, isSa
                             )}
                         </View>
                         <View className="flex-row items-center gap-2 mt-0.5">
-                            <Text className="text-xs text-slate-500">{post.community.name}</Text>
+                            <Text className="text-xs text-slate-500">{post.community?.name || 'EcoSphere'}</Text>
                             <Text className="text-slate-700">•</Text>
                             <Text className="text-xs text-slate-500">{post.timestamp}</Text>
                         </View>
@@ -204,10 +206,10 @@ const PostCard = memo(function PostCard({ post, onLike, onComment, onShare, isSa
             {/* Impact pills */}
             <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-3"
                 contentContainerStyle={{ paddingHorizontal: 16, gap: 8 }}>
-                {post.co2Saved > 0 && <ImpactPill icon={Zap} value={`${post.co2Saved}kg`} label="CO₂" color="#2dd4bf" bgClass="bg-teal-500/10" />}
-                {post.distanceKm && <ImpactPill icon={MapPin} value={`${post.distanceKm}km`} label="Distance" color="#60a5fa" bgClass="bg-blue-500/10" />}
-                {post.caloriesBurned > 0 && <ImpactPill icon={Flame} value={`${post.caloriesBurned}`} label="Cal" color="#f97316" bgClass="bg-orange-500/10" />}
-                {post.aiConfidenceScore && <ImpactPill icon={ShieldCheck} value={`${Math.round(post.aiConfidenceScore * 100)}%`} label="AI Trust" color="#34d399" bgClass="bg-emerald-500/10" />}
+                {(post.co2Saved > 0) && <ImpactPill icon={Zap} value={`${post.co2Saved}kg`} label="CO₂" color="#2dd4bf" bgClass="bg-teal-500/10" />}
+                {(post.distanceKm > 0) && <ImpactPill icon={MapPin} value={`${post.distanceKm}km`} label="Distance" color="#60a5fa" bgClass="bg-blue-500/10" />}
+                {(post.caloriesBurned > 0) && <ImpactPill icon={Flame} value={`${post.caloriesBurned}`} label="Cal" color="#f97316" bgClass="bg-orange-500/10" />}
+                {(post.aiConfidenceScore > 0) && <ImpactPill icon={ShieldCheck} value={`${Math.round(post.aiConfidenceScore * 100)}%`} label="AI Trust" color="#34d399" bgClass="bg-emerald-500/10" />}
             </ScrollView>
 
             {/* Caption */}
@@ -318,14 +320,23 @@ export default function Home() {
     const [notifVisible, setNotifVisible] = useState(false);
     const [streakVisible, setStreakVisible] = useState(false);
     const [isRefreshing, setIsRefreshing] = useState(false);
+    const [currentUser, setCurrentUser] = useState(null);
     const appState = useRef(AppState.currentState);
+
+    // ─── Load current user profile ───
+    useEffect(() => {
+        fetchCurrentUserProfile().then(user => {
+            setCurrentUser(user);
+            // Load trending with real community ID
+            if (user?.communityId) loadTrending(user.communityId);
+        });
+    }, []);
 
     // ─── Load everything on mount ───
     useEffect(() => {
         loadFeed();
         loadNotifications();
         loadSavedPosts();
-        loadTrending(CURRENT_USER.communityId);
         loadStreak();
     }, []);
 
@@ -335,7 +346,7 @@ export default function Home() {
             if (appState.current.match(/inactive|background/) && nextState === 'active') {
                 loadFeed();
                 loadNotifications();
-                loadTrending(CURRENT_USER.communityId);
+                if (currentUser?.communityId) loadTrending(currentUser.communityId);
                 loadStreak();
             }
             appState.current = nextState;
@@ -358,7 +369,7 @@ export default function Home() {
         // 3s animation finished — now reload data
         loadFeed();
         loadNotifications();
-        loadTrending(CURRENT_USER.communityId);
+        if (currentUser?.communityId) loadTrending(currentUser.communityId);
         loadStreak();
         setIsRefreshing(false);
         console.log('[Home] Data reload triggered, isRefreshing = false');
@@ -421,6 +432,7 @@ export default function Home() {
                 onStreakPress={handleStreakPress}
                 onAvatarPress={handleAvatarPress}
                 streakData={streakData}
+                currentUser={currentUser}
             />
             <TrendingSection trending={trendingData} onPress={handleTrendingPress} />
             {feedError && <ErrorBanner message={feedError} onRetry={loadFeed} />}
@@ -429,7 +441,7 @@ export default function Home() {
                 <Text className="text-slate-500 text-xs font-semibold uppercase tracking-wider">Your Feed</Text>
             </View>
         </>
-    ), [unreadCount, handleNotifPress, handleStreakPress, handleAvatarPress, streakData, trendingData, feedError, loadFeed, handleTrendingPress]);
+    ), [unreadCount, handleNotifPress, handleStreakPress, handleAvatarPress, streakData, currentUser, trendingData, feedError, loadFeed, handleTrendingPress]);
 
     // ─── Render post ───
     const renderPost = useCallback(({ item }) => (
@@ -448,7 +460,7 @@ export default function Home() {
     if (feedLoading) {
         return (
             <SafeAreaView className="flex-1 bg-gray-900" edges={['top']}>
-                <FeedHeader unreadCount={0} onNotifPress={() => { }} onStreakPress={() => { }} onAvatarPress={() => { }} streakData={null} />
+                <FeedHeader unreadCount={0} onNotifPress={() => { }} onStreakPress={() => { }} onAvatarPress={() => { }} streakData={null} currentUser={currentUser} />
                 <SkeletonFeed />
             </SafeAreaView>
         );
@@ -509,10 +521,10 @@ export default function Home() {
                 visible={streakVisible}
                 onClose={() => setStreakVisible(false)}
                 streak={streakData || {
-                    current: CURRENT_USER.streakCount,
-                    goal: CURRENT_USER.streakGoal,
-                    lastActionDate: CURRENT_USER.lastActionDate,
-                    graceHours: CURRENT_USER.graceHours,
+                    current: currentUser?.streakCount || 0,
+                    goal: currentUser?.streakGoal || 7,
+                    lastActionDate: currentUser?.lastActionDate || 'Today',
+                    graceHours: currentUser?.graceHours || 6,
                 }}
             />
         </SafeAreaView>
