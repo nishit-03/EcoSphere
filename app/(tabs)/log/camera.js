@@ -4,12 +4,14 @@ import { View, Text, TouchableOpacity, Button as RNButton, Image } from 'react-n
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Button } from '../../../components/Button';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Camera, RefreshCw } from 'lucide-react-native';
+import { supabase } from '../../../utils/supabase';
 
 export default function CameraScreen() {
     const [permission, requestPermission] = useCameraPermissions();
-    const [photo, setPhoto] = useState(null);
+    const [beforePhoto, setBeforePhoto] = useState(null);
+    const [afterPhoto, setAfterPhoto] = useState(null);
     const [step, setStep] = useState('before'); // 'before' | 'after'
+    const [currentPhoto, setCurrentPhoto] = useState(null);
     const cameraRef = useRef(null);
     const router = useRouter();
     const params = useLocalSearchParams();
@@ -27,8 +29,8 @@ export default function CameraScreen() {
     const takePicture = async () => {
         if (cameraRef.current) {
             try {
-                const photo = await cameraRef.current.takePictureAsync({ quality: 0.7, base64: true });
-                setPhoto(photo.uri);
+                const photo = await cameraRef.current.takePictureAsync({ quality: 0.7 });
+                setCurrentPhoto(photo.uri);
             } catch (e) {
                 console.error(e);
             }
@@ -37,22 +39,29 @@ export default function CameraScreen() {
 
     const handleNext = () => {
         if (step === 'before') {
-            // In real app, we would store 'before' photo and clear state for 'after'
-            // For MVP, checking flow
+            setBeforePhoto(currentPhoto);
+            setCurrentPhoto(null);
             setStep('after');
-            setPhoto(null);
         } else {
-            // Proceed to verification
-            router.push('/(tabs)/log/verify');
+            setAfterPhoto(currentPhoto);
+            // Navigate to verify with photo URIs
+            router.push({
+                pathname: '/(tabs)/log/verify',
+                params: {
+                    action: params.action || 'other',
+                    beforeUri: beforePhoto,
+                    afterUri: currentPhoto,
+                },
+            });
         }
     };
 
-    if (photo) {
+    if (currentPhoto) {
         return (
             <SafeAreaView className="flex-1 bg-black justify-between">
-                <Image source={{ uri: photo }} className="flex-1 rounded-xl m-4" />
+                <Image source={{ uri: currentPhoto }} className="flex-1 rounded-xl m-4" />
                 <View className="px-6 pb-6 flex-row gap-4">
-                    <Button title="Retake" variant="secondary" onPress={() => setPhoto(null)} className="flex-1" />
+                    <Button title="Retake" variant="secondary" onPress={() => setCurrentPhoto(null)} className="flex-1" />
                     <Button title={step === 'before' ? "Next Step" : "Verify"} onPress={handleNext} className="flex-1" />
                 </View>
             </SafeAreaView>
@@ -67,6 +76,9 @@ export default function CameraScreen() {
                         <Text className="text-white font-bold text-lg uppercase">
                             Capture {step} Photo
                         </Text>
+                        {step === 'after' && beforePhoto && (
+                            <Text className="text-teal-400 text-xs mt-1">Before photo saved ✓</Text>
+                        )}
                     </View>
 
                     <View className="flex-row justify-center items-center pb-12">
